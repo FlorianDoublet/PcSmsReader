@@ -8,6 +8,7 @@ import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
 
 
+import com.example.florian_doublet.pcsmsreader.Helpers.SmsHelper;
 import com.example.florian_doublet.pcsmsreader.SmsMms.Mms;
 import com.example.florian_doublet.pcsmsreader.SmsMms.Sms;
 import com.example.florian_doublet.pcsmsreader.SmsMms.SmsMms;
@@ -17,14 +18,15 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.text.MessageFormat;
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 
 public class MainActivity extends AppCompatActivity {
 
     private static List<Contact> conversationContacts = new ArrayList<>();
+    private int MESSAGE_LIMIT = 200;
+
+
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -34,7 +36,7 @@ public class MainActivity extends AppCompatActivity {
         loadAllContacts();
         //TODO take a long time, need to see why
         for(Contact contact : conversationContacts){
-            getAllMessageFromConversation(contact.getThread_id());
+            contact.setConversation(getAllMessageFromConversation(contact.getThread_id()));
         }
     }
 
@@ -44,28 +46,26 @@ public class MainActivity extends AppCompatActivity {
      */
     public void loadAllContacts(){
 
-        Uri uriConversations = Uri.parse("content://mms-sms/conversations");
-
         //all the fields we want
-        final String[] projection = new String[]{"_id", "ct_t", "thread_id", "address"};
-        final String sortBy = "normalized_date desc";
-        Cursor cur = getContentResolver().query(uriConversations, projection, null, null, sortBy);
+        final String[] projection = new String[]{SmsHelper.COLUMN_ID, SmsHelper.COLUMN_MMS, SmsHelper.COLUMN_THREAD_ID, SmsHelper.COLUMN_ADDRESS};
+        final String sortBy = SmsHelper.COLUMN_DATE_NORMALIZED;
+        Cursor cur = getContentResolver().query(SmsHelper.CONVERSATION_PROVIDER, projection, null, null, sortBy);
 
 
         assert cur != null;
         while(cur.moveToNext()){
-            Integer thread_id = cur.getInt(cur.getColumnIndexOrThrow("thread_id"));
-            String address = null;
+            Integer thread_id = cur.getInt(cur.getColumnIndexOrThrow(SmsHelper.COLUMN_THREAD_ID));
+            String address;
 
-            String ct_t = cur.getString(cur.getColumnIndex("ct_t"));
-            int _id = cur.getInt(cur.getColumnIndexOrThrow("_id"));
+            String ct_t = cur.getString(cur.getColumnIndex(SmsHelper.COLUMN_MMS));
+            int _id = cur.getInt(cur.getColumnIndexOrThrow(SmsHelper.COLUMN_ID));
 
             if(ct_t != null) {
                 //it's a MMS
                 address = getAddressFromMms(_id);
             } else{
                 //it's a SMS
-               address = cur.getString(cur.getColumnIndexOrThrow("address"));
+               address = cur.getString(cur.getColumnIndexOrThrow(SmsHelper.COLUMN_ADDRESS));
             }
 
             String name = getContactNameByAddress(address);
@@ -93,21 +93,20 @@ public class MainActivity extends AppCompatActivity {
         return name;
     }
 
-    public List<SmsMms>  getAllMessageFromConversation(int conv_id){
+    public List<SmsMms>  getAllMessageFromConversation(int thread_id){
         List<SmsMms> messages = new ArrayList<>();
-        Uri uriConversation = Uri.parse("content://mms-sms/conversations/" + conv_id);
-        final String[] projection = new String[]{"_id", "ct_t"};
-        final String sortBy = "normalized_date desc";
-        Cursor cur = getContentResolver().query(uriConversation, projection, null, null, sortBy);
+        Uri uriConversation = SmsHelper.getConversationProviderWithThreadId(thread_id);
+        final String[] projection = new String[]{SmsHelper.COLUMN_ID, SmsHelper.COLUMN_MMS};
+        final String sortBy = SmsHelper.COLUMN_DATE_NORMALIZED;
+        Cursor cur = getContentResolver().query(uriConversation, projection, null, null, sortBy + " desc limit " + MESSAGE_LIMIT);
+        //will go through all messages for this conversation thread
         while(cur.moveToNext()) {
-            String ct_t = cur.getString(cur.getColumnIndex("ct_t"));
-            int _id = cur.getInt(cur.getColumnIndexOrThrow("_id"));
+            String ct_t = cur.getString(cur.getColumnIndex(SmsHelper.COLUMN_MMS));
+            int _id = cur.getInt(cur.getColumnIndexOrThrow(SmsHelper.COLUMN_ID));
 
-            if(ct_t != null) {
-                //it's a MMS
+            if(isMms(ct_t)) {
                 messages.add(getMms(_id));
             }else{
-                //is it a SMS
                 messages.add(getSms(_id));
             }
 
@@ -117,19 +116,22 @@ public class MainActivity extends AppCompatActivity {
         return messages;
     }
 
+    public boolean isMms(String ct_t){
+        return ct_t != null && "application/vnd.wap.multipart.related".equals(ct_t);
+    }
+
     public Sms getSms(int _id){
-        String where = "_id = "+_id;
-        Uri uri = Uri.parse("content://sms");
-        Cursor cur = getContentResolver().query(uri, null, where, null, null);
+        String where = SmsHelper.COLUMN_ID + " = "+ _id;
+        Cursor cur = getContentResolver().query(SmsHelper.SMS_CONTENT_PROVIDER, null, where, null, null);
 
 
         assert cur != null;
         cur.moveToFirst();
 
-        String address = cur.getString(cur.getColumnIndex("address"));
-        int type = cur.getInt(cur.getColumnIndex("type"));
-        Long date = Long.parseLong(cur.getString(cur.getColumnIndex("date")));
-        String body = cur.getString(cur.getColumnIndex("body"));
+        String address = cur.getString(cur.getColumnIndex(SmsHelper.COLUMN_ADDRESS));
+        int type = cur.getInt(cur.getColumnIndex(SmsHelper.COLUMN_TYPE));
+        Long date = Long.parseLong(cur.getString(cur.getColumnIndex(SmsHelper.COLUMN_DATE)));
+        String body = cur.getString(cur.getColumnIndex(SmsHelper.COLUMN_BODY));
 
         cur.close();
 
@@ -138,25 +140,23 @@ public class MainActivity extends AppCompatActivity {
 
 
     public Mms getMms(int _id){
-        String where = "mid = "+_id;
-        Uri uri = Uri.parse("content://mms/part");
-        Cursor cur = getContentResolver().query(uri, null, where, null, null);
+        String where = SmsHelper.COLUMN_MMS_ID + " = "+_id;
+
+        Cursor cur = getContentResolver().query(SmsHelper.MMS_PART_CONTENT_PROVIDER, null, where, null, null);
 
         assert cur != null;
         cur.moveToFirst();
 
-        String partId = cur.getString(cur.getColumnIndex("_id"));
-        String mimeType = cur.getString(cur.getColumnIndex("ct"));
+        String partId = cur.getString(cur.getColumnIndex(SmsHelper.COLUMN_ID));
+        String mimeType = cur.getString(cur.getColumnIndex(SmsHelper.COLUMN_MIMETYPE));
 
         String body = null;
-        if ("text/plain".equals(mimeType)) {
+        if (Mms.hasAText(mimeType)) {
             body = getMmsText(cur, partId);
         }
 
         Bitmap image = null;
-        if ("image/jpeg".equals(mimeType) || "image/bmp".equals(mimeType) ||
-                "image/gif".equals(mimeType) || "image/jpg".equals(mimeType) ||
-                "image/png".equals(mimeType)) {
+        if (Mms.hasAnImage(mimeType)) {
             image = getMmsImage(partId);
         }
 
@@ -165,36 +165,34 @@ public class MainActivity extends AppCompatActivity {
 
         cur.close();
 
-        uri = Uri.parse("content://mms/");
-        where = "_id = " + _id;
-        cur = getContentResolver().query(uri, null, where, null, null);
+        where = SmsHelper.COLUMN_ID + " = " + _id;
+        cur = getContentResolver().query(SmsHelper.MMS_CONTENT_PROVIDER, null, where, null, null);
 
         assert cur != null;
         cur.moveToFirst();
 
-        int type = cur.getInt(cur.getColumnIndex("type"));
-        Long date = Long.parseLong(cur.getString(cur.getColumnIndex("date")));
+        Long date = Long.parseLong(cur.getString(cur.getColumnIndex(SmsHelper.COLUMN_DATE)));
 
         cur.close();
 
-        return new Mms(type, body, address, date, image);
+        return new Mms(body, address, date, image);
 
     }
 
     public String getMmsText(Cursor cur, String partId){
-        String data = cur.getString(cur.getColumnIndex("_data"));
+        String data = cur.getString(cur.getColumnIndex(SmsHelper.COLUMN_MMS_DATA));
         String body;
         if (data != null) {
             //mean that the text is in a data, so we have to extract it
             body = getMmsTextInData(partId);
         } else {
-            body = cur.getString(cur.getColumnIndex("text"));
+            body = cur.getString(cur.getColumnIndex(SmsHelper.COLUMN_MMS_TEXT));
         }
         return body;
     }
 
     public String getMmsTextInData(String _id) {
-        Uri partURI = Uri.parse("content://mms/part/" + _id);
+        Uri partURI = SmsHelper.getMMSPartProviderWithId(_id);
         InputStream is = null;
         StringBuilder sb = new StringBuilder();
         try {
@@ -208,25 +206,25 @@ public class MainActivity extends AppCompatActivity {
                     temp = reader.readLine();
                 }
             }
-        } catch (IOException e) {}
+        } catch (IOException ignored) {}
         finally {
             if (is != null) {
                 try {
                     is.close();
-                } catch (IOException e) {}
+                } catch (IOException ignored) {}
             }
         }
         return sb.toString();
     }
 
     public Bitmap getMmsImage(String _id) {
-        Uri partURI = Uri.parse("content://mms/part/" + _id);
+        Uri partURI = SmsHelper.getMMSPartProviderWithId(_id);
         InputStream is = null;
         Bitmap bitmap = null;
         try {
             is = getContentResolver().openInputStream(partURI);
             bitmap = BitmapFactory.decodeStream(is);
-        } catch (IOException e) {}
+        } catch (IOException ignored) {}
         finally {
             if (is != null) {
                 try {
@@ -239,7 +237,7 @@ public class MainActivity extends AppCompatActivity {
 
     //TODO when it's a group conversation take the last phone numer despite of the first
     private String getAddressFromMms(int _id) {
-        String selectionAdd = new String("msg_id=" + _id);
+        String selectionAdd = "msg_id =" + _id;
         String uriStr = MessageFormat.format("content://mms/{0}/addr", _id);
         Uri uriAddress = Uri.parse(uriStr);
         Cursor cAdd = getContentResolver().query(uriAddress, null,
@@ -260,33 +258,8 @@ public class MainActivity extends AppCompatActivity {
                 }
             } while (cAdd.moveToNext());
         }
-        if (cAdd != null) {
-            cAdd.close();
-        }
+        if (cAdd != null) cAdd.close();
         return address;
     }
-
-
-    /*
-    for the moment useless
-     */
-    public String dateSms(int _id){
-
-        String where = "_id = "+_id;
-        Uri uri = Uri.parse("content://sms");
-        Cursor cur = getContentResolver().query(uri, null, where, null, null);
-        Long date_s = null;
-        assert cur != null;
-        while(cur.moveToNext()) {
-            date_s = Long.parseLong(cur.getString(cur.getColumnIndex("date")));
-
-        }
-        cur.close();
-        String formattedDate = new SimpleDateFormat("MM/dd/yyyy").format(date_s);
-        return formattedDate;
-
-    }
-
-
 
 }
